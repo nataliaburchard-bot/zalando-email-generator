@@ -1,8 +1,7 @@
 import streamlit as st
-import base64
+import mammoth
 import os
 import re
-import mammoth
 from docx import Document
 from datetime import datetime
 
@@ -17,21 +16,15 @@ user_name = st.text_input("Your name for sign-off (e.g., Natalia Burchard)")
 # Upload DOC or DOCX file
 uploaded_file = st.file_uploader("Upload .doc or .docx Jira Ticket", type=["doc", "docx"])
 
-# ---- TEXT EXTRACTION ----
-def extract_text_from_doc(uploaded_file):
-    """Handles both .doc and .docx using mammoth for .doc"""
-    if uploaded_file.name.endswith(".docx"):
-        doc = Document(uploaded_file)
-        paragraphs = [p.text for p in doc.paragraphs if p.text.strip() != ""]
-        return paragraphs
-    else:
-        # Convert .doc to plain text using mammoth
-        with uploaded_file as doc_file:
-            result = mammoth.convert_to_text(doc_file)
-            text = result.value
-            return [line.strip() for line in text.splitlines() if line.strip() != ""]
+# Extract text functions
+def extract_text_from_docx(file):
+    doc = Document(file)
+    return [p.text for p in doc.paragraphs if p.text.strip() != ""]
 
-# ---- FIELD EXTRACTION ----
+def extract_text_from_doc(file):
+    result = mammoth.extract_raw_text(file)
+    return [line.strip() for line in result.value.splitlines() if line.strip() != ""]
+
 def extract_supplier(paragraphs):
     for p in paragraphs:
         match = re.search(r"Supplier:\s*(.*)", p)
@@ -53,7 +46,6 @@ def extract_table(paragraphs):
             table_data.append(p)
     return "\n".join(table_data) if table_data else "[Table information]"
 
-# ---- EMAIL TEMPLATES ----
 def generate_price_variance_email(supplier, invoice, table, name):
     return f"""Dear {supplier},
 
@@ -98,16 +90,24 @@ If you have further questions, please do not hesitate to reach out.
 Thank you and kind regards,
 {name}"""
 
-# ---- MAIN LOGIC ----
+# MAIN LOGIC
 if uploaded_file and user_name:
-    st.info("Processing file...")
-
     try:
-        text = extract_text_from_doc(uploaded_file)
-        supplier = extract_supplier(text)
-        invoice = extract_invoice_number(text)
-        table = extract_table(text)
+        st.info("Processing file...")
 
+        # Determine file type
+        if uploaded_file.name.endswith(".docx"):
+            paragraphs = extract_text_from_docx(uploaded_file)
+        elif uploaded_file.name.endswith(".doc"):
+            paragraphs = extract_text_from_doc(uploaded_file)
+        else:
+            raise ValueError("Unsupported file type")
+
+        supplier = extract_supplier(paragraphs)
+        invoice = extract_invoice_number(paragraphs)
+        table = extract_table(paragraphs)
+
+        # Determine email type
         if "price" in uploaded_file.name.lower():
             email_body = generate_price_variance_email(supplier, invoice, table, user_name)
         else:
@@ -116,10 +116,9 @@ if uploaded_file and user_name:
             number_info = "[Number/size breakdown]"
             email_body = generate_article_not_ordered_email(supplier, sn_info, article_info, number_info, user_name)
 
-        st.success("✅ File processed successfully!")
+        st.success("✅ Email generated successfully!")
         st.markdown("**📧 Email Preview**")
         st.text_area("", email_body, height=500)
 
     except Exception as e:
         st.error(f"❌ Something went wrong: {e}")
-
