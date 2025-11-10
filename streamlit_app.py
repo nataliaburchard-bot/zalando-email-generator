@@ -1,119 +1,56 @@
 import os
-import re
 import io
-import time
-import json
-import requests
+import re
 import streamlit as st
 import mammoth
 
-# ---------- CONFIG ----------
-CLOUDCONVERT_API = "https://api.cloudconvert.com/v2"
+# Aspose SDK
+import asposewordscloud
+from asposewordscloud.apis.words_api import WordsApi
+from asposewordscloud.models.requests import ConvertDocumentRequest
 
+# ---------- UI ----------
 st.set_page_config(page_title="💌 Zalando Email Generator")
 st.title("💌 Zalando Email Generator")
 
-# --- UI ---
-user_name = st.text_input("Your name for sign-off (e.g., Natalia)")
+user_name = st.text_input("Your name for sign-off (e.g., Natalia Burchard)")
 uploaded_file = st.file_uploader("Upload .doc Jira Ticket", type=["doc"])
 
-# ---------- API KEY HANDLING ----------
-def get_api_key() -> str | None:
-    """
-    Prefer Streamlit secrets; fall back to env var.
-    Also strip stray quotes/spaces that break auth.
-    """
-    key = None
+# ---------- Credentials ----------
+def get_aspose_creds():
+    """Reads credentials from Streamlit secrets or environment variables."""
+    cid = None
+    sec = None
     try:
-        # secrets if available
-        key = st.secrets.get("CLOUDCONVERT_API_KEY", None)
+        cid = st.secrets.get("ASPOSE_CLIENT_ID", None)
+        sec = st.secrets.get("ASPOSE_CLIENT_SECRET", None)
     except Exception:
         pass
-    if not key:
-        key = os.environ.get("CLOUDCONVERT_API_KEY")
-    if key:
-        key = str(key).strip().strip('"').strip("'")
-    return key
+    cid = cid or os.getenv("ASPOSE_CLIENT_ID")
+    sec = sec or os.getenv("ASPOSE_CLIENT_SECRET")
+    return (str(cid).strip() if cid else None,
+            str(sec).strip() if sec else None)
 
-API_KEY = get_api_key()
+ASPOSE_CLIENT_ID, ASPOSE_CLIENT_SECRET = get_aspose_creds()
 
-def auth_headers():
-    # Use both Authorization and X-API-KEY just in case
-    return {
-        "Authorization": f"Bearer {API_KEY}",
-        "X-API-KEY": API_KEY,
-        "Content-Type": "application/json"
-    }
+# ---------- Aspose converter ----------
+@st.cache_resource
+def get_words_api():
+    if not ASPOSE_CLIENT_ID or not ASPOSE_CLIENT_SECRET:
+        return None
+    return WordsApi(ASPOSE_CLIENT_ID, ASPOSE_CLIENT_SECRET)
 
-def mask(k: str) -> str:
-    if not k:
-        return "—"
-    if len(k) <= 8:
-        return "*" * len(k)
-    return f"{k[:4]}***{k[-4:]}"
-
-def verify_api_key() -> None:
+def convert_doc_to_docx_aspose(file_bytes: bytes) -> bytes:
     """
-    Call /users/me to confirm the key is valid *before* creating jobs.
-    Raises with a clear message if unauthorized.
+    Uses Aspose Words API to convert .doc -> .docx in memory.
     """
-    r = requests.get(f"{CLOUDCONVERT_API}/users/me", headers=auth_headers())
-    if r.status_code == 401:
-        raise RuntimeError(
-            "CloudConvert rejected the API key (401 Unauthorized). "
-            "Double-check the key is correct, active, and not copied with spaces."
-        )
-    r.raise_for_status()
-
-# ---------- CloudConvert helpers ----------
-def cc_create_job():
-    payload = {
-        "tasks": {
-            "import-my-file": {"operation": "import/upload"},
-            "convert-my-file": {
-                "operation": "convert",
-                "input": "import-my-file",
-                "input_format": "doc",
-                "output_format": "docx"
-            },
-            "export-my-file": {"operation": "export/url", "input": "convert-my-file"}
-        }
-    }
-    r = requests.post(f"{CLOUDCONVERT_API}/jobs", headers=auth_headers(), data=json.dumps(payload))
-    r.raise_for_status()
-    return r.json()["data"]
-
-def cc_upload_to_signed_url(job_data, file_bytes, filename):
-    import_task = next(t for t in job_data["tasks"] if t["name"] == "import-my-file")
-    upload_url = import_task["result"]["form"]["url"]
-    form_params = import_task["result"]["form"]["parameters"]
-    files = {"file": (filename, file_bytes)}
-    r = requests.post(upload_url, data=form_params, files=files)
-    if r.status_code not in (200, 201, 204):
-        raise RuntimeError(f"Upload failed: {r.status_code} {r.text}")
-
-def cc_poll_until_finished(job_id, timeout_s=120, poll_every_s=2):
-    t0 = time.time()
-    while True:
-        r = requests.get(f"{CLOUDCONVERT_API}/jobs/{job_id}", headers=auth_headers())
-        r.raise_for_status()
-        data = r.json()["data"]
-        if data["status"] == "finished":
-            return data
-        if data["status"] == "error":
-            bad = next((t for t in data["tasks"] if t["status"] == "error"), None)
-            msg = bad["message"] if bad and "message" in bad else "Unknown conversion error"
-            raise RuntimeError(msg)
-        if time.time() - t0 > timeout_s:
-            raise TimeoutError("CloudConvert job timed out")
-        time.sleep(poll_every_s)
-
-def cc_download_converted_docx(job_data) -> bytes:
-    export_task = next(t for t in job_data["tasks"] if t["name"] == "export-my-file")
-    file_url = export_task["result"]["files"][0]["url"]
-    r = requests.get(file_url)
-    r.raise_for_status()
-    return r.content
+    api = get_words_api()
+    if api is None:
+        raise RuntimeError("Aspose credentials missing. Set ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET.")
+    # Aspose expects a file-like object
+    request = ConvertDocumentRequest(document=io.BytesIO(file_bytes), format="docx")
+    result = api.convert_document(request)  # returns bytes
+    return result
 
 # ---------- Parsing helpers ----------
 def extract_text_from_docx_bytes(docx_bytes: bytes):
@@ -123,7 +60,6 @@ def extract_text_from_docx_bytes(docx_bytes: bytes):
     return [line.strip() for line in text.split("\n") if line.strip()]
 
 def extract_supplier(paragraphs):
-    import re
     for p in paragraphs:
         m = re.search(r"Supplier:\s*(.*)", p, flags=re.I)
         if m:
@@ -131,7 +67,6 @@ def extract_supplier(paragraphs):
     return "[Supplier]"
 
 def extract_invoice_number(paragraphs):
-    import re
     for p in paragraphs:
         m = re.search(r"Supplier Invoice Number:\s*(.*)", p, flags=re.I)
         if m:
@@ -142,6 +77,7 @@ def extract_table(paragraphs):
     rows = [p for p in paragraphs if ("," in p and any(c.isdigit() for c in p))]
     return "\n".join(rows) if rows else "[Table information]"
 
+# ---------- Email Templates ----------
 def generate_price_variance_email(supplier, invoice, table, name):
     return f"""Dear {supplier},
 
@@ -182,37 +118,25 @@ Thank you and kind regards,
 {name}"""
 
 # ---------- MAIN ----------
-# Show what key the app sees (masked) so you can confirm it's actually loaded.
-st.caption(f"CloudConvert API key detected: **{mask(API_KEY)}**")
-
 if uploaded_file and user_name:
     try:
-        if not API_KEY:
-            st.error("No CloudConvert API key found. Add it to st.secrets['CLOUDCONVERT_API_KEY'] or set the CLOUDCONVERT_API_KEY env var.")
+        if not (ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET):
+            st.error("Missing Aspose credentials. Add them to .streamlit/secrets.toml as ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET.")
             st.stop()
 
         with st.status("Processing file…", expanded=False) as status:
-            status.update(label="Verifying API key")
-            verify_api_key()
-
-            status.update(label="Creating conversion job")
-            job = cc_create_job()
-
-            status.update(label="Uploading .doc to CloudConvert")
+            status.update(label="Converting .doc → .docx with Aspose")
             file_bytes = uploaded_file.read()
-            cc_upload_to_signed_url(job, file_bytes, uploaded_file.name)
+            docx_bytes = convert_doc_to_docx_aspose(file_bytes)
 
-            status.update(label="Converting to .docx")
-            finished_job = cc_poll_until_finished(job["id"])
+            status.update(label="Extracting text")
+            paragraphs = extract_text_from_docx_bytes(docx_bytes)
 
-            status.update(label="Downloading converted .docx")
-            docx_bytes = cc_download_converted_docx(finished_job)
-
-        paragraphs = extract_text_from_docx_bytes(docx_bytes)
         supplier = extract_supplier(paragraphs)
         invoice = extract_invoice_number(paragraphs)
         table = extract_table(paragraphs)
 
+        # route by filename
         if "price" in uploaded_file.name.lower():
             email_body = generate_price_variance_email(supplier, invoice, table, user_name)
         else:
