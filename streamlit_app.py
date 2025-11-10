@@ -9,7 +9,7 @@ import mammoth
 from datetime import datetime
 
 # ---------- CONFIG ----------
-CLOUDCONVERT_API_KEY = os.getenv("CLOUDCONVERT_API_KEY")  # <-- set this in your env once
+CLOUDCONVERT_API_KEY = st.secrets["CLOUDCONVERT_API_KEY"]  # <-- set this in your env once
 CLOUDCONVERT_API = "https://api.cloudconvert.com/v2/jobs"
 
 st.set_page_config(page_title="💌 Zalando Email Generator")
