@@ -118,7 +118,12 @@ if uploaded_file and user_name:
     try:
         st.info("Processing file...")
 
-        if is_docx(uploaded_file):
+        uploaded_file.seek(0)  # Important: reset pointer
+        is_docx_file = is_docx(uploaded_file)
+
+        uploaded_file.seek(0)  # Reset again after check
+
+        if is_docx_file:
             paragraphs = extract_text_from_docx(uploaded_file)
         else:
             paragraphs = extract_text_from_doc(uploaded_file)
