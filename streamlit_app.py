@@ -6,7 +6,7 @@ import re
 from docx import Document
 from datetime import datetime
 
-st.set_page_config(page_title="💌 Gemini Email Generator")
+st.set_page_config(page_title="💌 Zalando Email Generator")
 
 # Title
 st.title("💌 Gemini Email Generator")
