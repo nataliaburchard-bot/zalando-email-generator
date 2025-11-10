@@ -96,12 +96,17 @@ if uploaded_file and user_name:
         st.info("Processing file...")
 
         # Determine file type
-        if uploaded_file.name.endswith(".docx"):
-            paragraphs = extract_text_from_docx(uploaded_file)
-        elif uploaded_file.name.endswith(".doc"):
-            paragraphs = extract_text_from_doc(uploaded_file)
-        else:
-            raise ValueError("Unsupported file type")
+       def is_docx(file):
+    file.seek(0)
+    header = file.read(2)
+    file.seek(0)
+    return header == b'PK'
+
+if is_docx(uploaded_file):
+    paragraphs = extract_text_from_docx(uploaded_file)
+else:
+    paragraphs = extract_text_from_doc(uploaded_file)
+
 
         supplier = extract_supplier(paragraphs)
         invoice = extract_invoice_number(paragraphs)
