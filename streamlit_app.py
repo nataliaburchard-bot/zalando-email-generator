@@ -1,7 +1,9 @@
 import os
 import io
 import re
+import json
 import streamlit as st
+from streamlit.components.v1 import html
 import mammoth
 
 # Aspose SDK
@@ -199,22 +201,41 @@ if uploaded_file and user_name:
                 supplier, sn_info, article_info, number_info, user_name
             )
 
+        # --- Output + Copy Button ---
         st.success("✅ File processed successfully!")
         st.markdown("**📧 Email Preview**")
         st.text_area("Generated Email", email_body, height=500, key="email_preview")
 
-        # --- copy to clipboard button ---
-        copy_script = """
+        _email_js_str = json.dumps(email_body)
+        html(f"""
+        <div style='margin-top:10px;'>
+          <button id="copyBtn" style="
+              padding: 0.6rem 1rem;
+              border-radius: 8px;
+              border: 1px solid #ddd;
+              cursor: pointer;
+              background-color:#f4f4f4;">
+            📋 Copy Email to Clipboard
+          </button>
+        </div>
         <script>
-        function copyToClipboard() {
-          const text = document.querySelector('textarea[data-testid="stTextArea-email_preview"]').value;
-          navigator.clipboard.writeText(text);
-          alert('Email copied to clipboard!');
-        }
+          const EMAIL_TEXT = {_email_js_str};
+          document.getElementById('copyBtn').addEventListener('click', async () => {{
+            try {{
+              await navigator.clipboard.writeText(EMAIL_TEXT);
+              alert('Email copied to clipboard!');
+            }} catch (e) {{
+              const ta = document.createElement('textarea');
+              ta.value = EMAIL_TEXT;
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+              alert('Email copied to clipboard!');
+            }}
+          }});
         </script>
-        """
-        st.markdown(copy_script, unsafe_allow_html=True)
-        st.markdown('<button onclick="copyToClipboard()">📋 Copy Email to Clipboard</button>', unsafe_allow_html=True)
+        """, height=70)
 
     except Exception as e:
         st.error(f"❌ Something went wrong: {e}")
