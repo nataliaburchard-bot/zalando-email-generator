@@ -53,4 +53,4 @@ def cc_upload_to_signed_url(job_data, file_bytes, filename):
     if r.status_code not in (200, 201, 204):
         raise RuntimeError(f"Upload failed: {r.status_code} {r.text}")
 
-def cc_poll_until_f_
+def cc_poll_until_finished(job_id, timeout_s=120, poll_every_s=2):
