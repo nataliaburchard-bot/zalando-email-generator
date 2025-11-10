@@ -18,18 +18,22 @@ def convert_doc_to_docx_cloudconvert(doc_file):
         st.error("CloudConvert API key not set. Please configure it in the environment variables.")
         return None
 
-    upload_response = requests.post(
-        "https://api.cloudconvert.com/v2/import/upload",
-        headers={"Authorization": f"Bearer {api_key}"}
-    )
-    upload_url = upload_response.json()["data"]["result"]["form"]["url"]
-    upload_params = upload_response.json()["data"]["result"]["form"]["parameters"]
+  # 1. Request a signed import URL
+signed_upload = requests.post(
+    "https://api.cloudconvert.com/v2/import/upload",
+    headers={"Authorization": f"Bearer {api_key}"}
+).json()
 
-    files = {'file': (doc_file.name, doc_file, 'application/msword')}
-    data = upload_params
+upload_url = signed_upload["data"]["url"]
+upload_params = signed_upload["data"]["parameters"]
 
-    upload_result = requests.post(upload_url, data=data, files=files)
-    import_id = upload_result.json()["data"]["id"]
+# 2. Perform the actual upload using signed URL
+files = {'file': (doc_file.name, doc_file, 'application/msword')}
+upload_result = requests.post(upload_url, data=upload_params, files=files)
+
+# 3. Use task name as input, not upload ID directly
+import_task_name = signed_upload["data"]["id"]
+
 
     payload = {
         "tasks": {
