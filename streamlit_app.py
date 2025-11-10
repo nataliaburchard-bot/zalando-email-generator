@@ -1,36 +1,13 @@
 import streamlit as st
-import requests
-import os
 import re
 import mammoth
-from docx import Document
 from datetime import datetime
 
 st.set_page_config(page_title="💌 Zalando Email Generator")
-
-# Title
 st.title("💌 Gemini Email Generator")
 
-# Input field for user name
 user_name = st.text_input("Your name for sign-off (e.g., Natalia Burchard)")
-
-# Upload DOC or DOCX file
-uploaded_file = st.file_uploader("Upload .doc or .docx Jira Ticket", type=["doc", "docx"])
-
-
-# ========== FILE DETECTION & EXTRACTION ==========
-
-def is_docx(file):
-    file.seek(0)
-    header = file.read(2)
-    file.seek(0)
-    return header == b'PK'  # docx files start with "PK"
-
-def extract_text_from_docx(file):
-    with open("temp.docx", "wb") as f:
-        f.write(file.read())
-    doc = Document("temp.docx")
-    return [p.text for p in doc.paragraphs if p.text.strip() != ""]
+uploaded_file = st.file_uploader("Upload .doc Jira Ticket", type=["doc"])
 
 def extract_text_from_doc(file):
     with open("temp.doc", "wb") as f:
@@ -39,9 +16,6 @@ def extract_text_from_doc(file):
         result = mammoth.extract_raw_text(f)
         text = result.value
         return [line.strip() for line in text.split("\n") if line.strip() != ""]
-
-
-# ========== DATA EXTRACTION HELPERS ==========
 
 def extract_supplier(paragraphs):
     for p in paragraphs:
@@ -63,9 +37,6 @@ def extract_table(paragraphs):
         if "," in p and any(char.isdigit() for char in p):
             table_data.append(p)
     return "\n".join(table_data) if table_data else "[Table information]"
-
-
-# ========== EMAIL TEMPLATES ==========
 
 def generate_price_variance_email(supplier, invoice, table, name):
     return f"""Dear {supplier},
@@ -111,22 +82,12 @@ If you have further questions, please do not hesitate to reach out.
 Thank you and kind regards,
 {name}"""
 
-
-# ========== MAIN LOGIC ==========
-
+# MAIN LOGIC
 if uploaded_file and user_name:
     try:
         st.info("Processing file...")
 
-        uploaded_file.seek(0)  # Important: reset pointer
-        is_docx_file = is_docx(uploaded_file)
-
-        uploaded_file.seek(0)  # Reset again after check
-
-        if is_docx_file:
-            paragraphs = extract_text_from_docx(uploaded_file)
-        else:
-            paragraphs = extract_text_from_doc(uploaded_file)
+        paragraphs = extract_text_from_doc(uploaded_file)
 
         supplier = extract_supplier(paragraphs)
         invoice = extract_invoice_number(paragraphs)
