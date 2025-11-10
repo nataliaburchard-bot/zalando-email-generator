@@ -98,16 +98,18 @@ def extract_number_info(paragraphs):
     next line -> size
     next line -> quantity
     next line -> SKU
+    Formats them neatly as separate blocks.
     """
-    lines = []
+    blocks = []
     for i, p in enumerate(paragraphs):
         if re.fullmatch(r"\d{13}", p):  # found an EAN
             ean = p
             size = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else ""
             qty = paragraphs[i + 2].strip() if i + 2 < len(paragraphs) else ""
             sku = paragraphs[i + 3].strip() if i + 3 < len(paragraphs) else ""
-            lines.append(f"{ean}  {size}  {qty}  {sku}")
-    return "\n".join(lines) if lines else "[Number/size breakdown]"
+            block = f"EAN: {ean}\nSize: {size}\nQuantity: {qty}\nSKU: {sku}\n"
+            blocks.append(block)
+    return "\n".join(blocks) if blocks else "[Number/size breakdown]"
 
 
 # ---------- Email templates ----------
