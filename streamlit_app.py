@@ -1,112 +1,176 @@
 import streamlit as st
-import requests
 import os
+import requests
 from docx import Document
-import time
+from io import BytesIO
 
-st.set_page_config(page_title="Gemini Email Generator", layout="centered")
-st.markdown("## 📩 Gemini Email Generator")
-st.markdown("**Upload .doc or .docx Jira Ticket**")
+st.set_page_config(page_title="Zalando Email Generator", layout="centered")
 
-uploaded_file = st.file_uploader("Drag and drop file here", type=["doc", "docx"])
+st.title("📩 Gemini Email Generator")
+st.markdown("Upload a `.doc` or `.docx` Jira ticket, and the app will generate the correct email.")
 
+uploaded_file = st.file_uploader("Upload your Jira Word file", type=["doc", "docx"])
+sender_name = st.text_input("Your name for sign-off (e.g., Natalia Burchard)")
+
+def convert_doc_to_docx_cloudconvert(doc_file):
+    api_key = os.getenv("CLOUDCONVERT_API_KEY")
+    if not api_key:
+        st.error("CloudConvert API key not set. Please configure it in the environment variables.")
+        return None
+
+    upload_response = requests.post(
+        "https://api.cloudconvert.com/v2/import/upload",
+        headers={"Authorization": f"Bearer {api_key}"}
+    )
+    upload_url = upload_response.json()["data"]["result"]["form"]["url"]
+    upload_params = upload_response.json()["data"]["result"]["form"]["parameters"]
+
+    files = {'file': (doc_file.name, doc_file, 'application/msword')}
+    data = upload_params
+
+    upload_result = requests.post(upload_url, data=data, files=files)
+    import_id = upload_result.json()["data"]["id"]
+
+    payload = {
+        "tasks": {
+            "import-upload": {
+                "operation": "import/upload"
+            },
+            "convert-my-file": {
+                "operation": "convert",
+                "input": "import-upload",
+                "input_format": "doc",
+                "output_format": "docx"
+            },
+            "export": {
+                "operation": "export/url",
+                "input": "convert-my-file"
+            }
+        }
+    }
+
+    job_response = requests.post(
+        "https://api.cloudconvert.com/v2/jobs",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload
+    )
+
+    job_id = job_response.json()["data"]["id"]
+
+    # Polling the job status
+    while True:
+        status_response = requests.get(
+            f"https://api.cloudconvert.com/v2/jobs/{job_id}",
+            headers={"Authorization": f"Bearer {api_key}"}
+        )
+        status_data = status_response.json()
+        if status_data["data"]["status"] == "finished":
+            break
+
+    export_task = next(task for task in status_data["data"]["tasks"] if task["name"] == "export")
+    file_url = export_task["result"]["files"][0]["url"]
+
+    # Download converted .docx
+    docx_response = requests.get(file_url)
+    return BytesIO(docx_response.content)
+
+def extract_info_from_doc(doc):
+    full_text = "\n".join([para.text for para in doc.paragraphs])
+
+    # Email type detection
+    if "quarantine storage" in full_text or "not ordered" in full_text.lower():
+        email_type = "article_not_ordered"
+    elif "price" in full_text.lower() and "invoice" in full_text.lower():
+        email_type = "price_variance"
+    else:
+        email_type = "unknown"
+
+    # Extract supplier name
+    supplier = ""
+    for para in doc.paragraphs:
+        if "Supplier" in para.text:
+            supplier = para.text.split(":")[-1].strip()
+            break
+
+    # Extract invoice number
+    invoice = ""
+    for para in doc.paragraphs:
+        if "Supplier Invoice Number" in para.text:
+            invoice = para.text.split(":")[-1].strip()
+            break
+
+    # Article table (if present)
+    table_text = ""
+    for table in doc.tables:
+        for row in table.rows:
+            table_text += "\t".join(cell.text.strip() for cell in row.cells) + "\n"
+
+    return {
+        "email_type": email_type,
+        "supplier": supplier or "supplier",
+        "invoice": invoice or "INVOICE-XXX",
+        "table": table_text.strip()
+    }
+
+def generate_email(info, sender_name):
+    if info["email_type"] == "price_variance":
+        return f"""Dear {info["supplier"]},
+
+I hope this email finds you well.
+Your invoice {info["invoice"]} is currently in clarification due to a price discrepancy.
+
+{info["table"]}
+
+Please get back to us within the next 3 working days, otherwise we will have to deduct the difference automatically via debit note. 
+If you have further questions, please do not hesitate to reach out.
+
+Thank you and kind regards,  
+{sender_name}"""
+    elif info["email_type"] == "article_not_ordered":
+        return f"""Dear {info["supplier"]},
+
+I hope this email finds you well.
+We have (an) item/s in quarantine storage as it looks like we have not ordered it and therefore we can not receive it/them. The articles have been delivered with [SN].
+
+When items cannot be directly received due to specific issues they are sidelined and stored in our quarantine storage area (= a separate area in our warehouse). This additional clarification process is causing capacity losses and unforeseen costs.
+
+{info["table"]}
+
+We have two options:
+
+1. Return (please provide the address, return label, and return authorization number).  
+2. You can agree that we shall process the goods internally at Zalando's own discretion and thereby relinquish any and all rights that may have been reserved in the items (items will be processed further internally and then sold in bulk).
+
+Please note, as per § 23 of the German Kreislaufwirtschaftsgesetz/Circular Economy Act (Kreislaufwirtschaftsgesetz) and similar legislation in other countries, we as a distributor are obliged to ensure that the quality of the articles we distribute is maintained and that they do not become waste (“duty of care”). 
+
+In order to follow our sustainable and eco-friendly approach and by the German Circular Economy Act, we are unable to proceed with destruction and can offer a return or internal processing. Please note, although the law is a German one we do apply it to all our warehouses across Europe.
+
+Please confirm how you would like to proceed within the next 3 working days.  
+Should we not hear from you until then, we will assume your tacit consent that we may proceed by processing the articles internally.
+
+Therefore, if you do not wish to accept this and would like to take back the articles for further processing on your side, please reach out to us within the deadline set.
+
+If you have further questions, please do not hesitate to reach out.
+
+Thank you and kind regards,  
+{sender_name}"""
+    else:
+        return "⚠️ Could not determine the email type from this file. Please check the content or structure."
+
+# Main app flow
 if uploaded_file:
     file_name = uploaded_file.name
-    st.success(f"✅ File uploaded successfully: {file_name}")
-
-    with open(file_name, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-
-    # DOCX handling directly
-    if file_name.endswith(".docx"):
-        try:
-            doc = Document(file_name)
-            text = "\n".join([para.text for para in doc.paragraphs])
-            st.text_area("📨 Email Preview", text, height=300)
-        except Exception as e:
-            st.error(f"❌ Failed to read .docx: {e}")
-
-    # DOC needs conversion
-    elif file_name.endswith(".doc"):
-        st.info("🔄 Converting .doc to .docx using CloudConvert...")
-
-        api_key = os.getenv("CLOUDCONVERT_API_KEY")
-        if not api_key:
-            st.error("❌ CloudConvert API key not set. Please check your environment variables.")
+    if file_name.endswith(".doc"):
+        st.info("Converting .doc to .docx using CloudConvert API...")
+        docx_file = convert_doc_to_docx_cloudconvert(uploaded_file)
+        if docx_file:
+            doc = Document(docx_file)
         else:
-            headers = {"Authorization": f"Bearer {api_key}"}
+            st.stop()
+    else:
+        doc = Document(uploaded_file)
 
-            # STEP 1: Create job
-            try:
-                job_resp = requests.post(
-                    "https://api.cloudconvert.com/v2/jobs",
-                    headers=headers,
-                    json={
-                        "tasks": {
-                            "import-upload": {
-                                "operation": "import/upload"
-                            },
-                            "convert-doc": {
-                                "operation": "convert",
-                                "input": "import-upload",
-                                "input_format": "doc",
-                                "output_format": "docx"
-                            },
-                            "export-url": {
-                                "operation": "export/url",
-                                "input": "convert-doc"
-                            }
-                        }
-                    },
-                )
-                job_data = job_resp.json()
-                job_id = job_data.get("data", {}).get("id")
+    info = extract_info_from_doc(doc)
+    email_output = generate_email(info, sender_name if sender_name else "[Your Name]")
 
-                if not job_id:
-                    st.error("❌ Could not get job ID. Check API key or usage limits.")
-                    st.json(job_data)
-                    st.stop()
-
-                upload_task = [
-                    t for t in job_data["data"]["tasks"]
-                    if t["name"] == "import-upload"
-                ][0]
-                upload_url = upload_task["result"]["form"]["url"]
-                upload_params = upload_task["result"]["form"]["parameters"]
-
-                # STEP 2: Upload file to CloudConvert
-                with open(file_name, "rb") as file_stream:
-                    upload_payload = {**upload_params, "file": file_stream}
-                    upload_resp = requests.post(upload_url, files=upload_payload)
-
-                if upload_resp.status_code != 201:
-                    st.error(f"❌ Upload failed with status {upload_resp.status_code}")
-                    st.text(upload_resp.text)
-                    st.stop()
-
-                # STEP 3: Wait for conversion to complete
-                time.sleep(6)
-                job_status_resp = requests.get(f"https://api.cloudconvert.com/v2/jobs/{job_id}", headers=headers)
-                job_status_data = job_status_resp.json()
-
-                export_task = [
-                    t for t in job_status_data["data"]["tasks"]
-                    if t["name"] == "export-url"
-                ][0]
-
-                file_url = export_task["result"]["files"][0]["url"]
-                output_file = file_name.replace(".doc", ".docx")
-
-                # STEP 4: Download converted file
-                converted_file = requests.get(file_url)
-                with open(output_file, "wb") as f_out:
-                    f_out.write(converted_file.content)
-
-                # STEP 5: Show result
-                doc = Document(output_file)
-                text = "\n".join([para.text for para in doc.paragraphs])
-                st.success("✅ Conversion successful!")
-                st.text_area("📨 Email Preview", text, height=300)
-
-            except Exception as e:
-                st.error(f"❌ Conversion failed: {e}")
+    st.text_area("📨 Email Preview", email_output, height=600)
