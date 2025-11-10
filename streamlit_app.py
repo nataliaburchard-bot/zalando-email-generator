@@ -201,7 +201,20 @@ if uploaded_file and user_name:
 
         st.success("✅ File processed successfully!")
         st.markdown("**📧 Email Preview**")
-        st.text_area("", email_body, height=500)
+        st.text_area("Generated Email", email_body, height=500, key="email_preview")
+
+        # --- copy to clipboard button ---
+        copy_script = """
+        <script>
+        function copyToClipboard() {
+          const text = document.querySelector('textarea[data-testid="stTextArea-email_preview"]').value;
+          navigator.clipboard.writeText(text);
+          alert('Email copied to clipboard!');
+        }
+        </script>
+        """
+        st.markdown(copy_script, unsafe_allow_html=True)
+        st.markdown('<button onclick="copyToClipboard()">📋 Copy Email to Clipboard</button>', unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"❌ Something went wrong: {e}")
