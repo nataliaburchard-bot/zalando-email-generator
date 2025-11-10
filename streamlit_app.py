@@ -9,6 +9,7 @@ import asposewordscloud
 from asposewordscloud.apis.words_api import WordsApi
 from asposewordscloud.models.requests import ConvertDocumentRequest
 
+
 # ---------- UI ----------
 st.set_page_config(page_title="💌 Zalando Email Generator")
 st.title("💌 Zalando Email Generator")
@@ -16,11 +17,11 @@ st.title("💌 Zalando Email Generator")
 user_name = st.text_input("Your name for sign-off (e.g., Natalia Burchard)")
 uploaded_file = st.file_uploader("Upload .doc Jira Ticket", type=["doc"])
 
+
 # ---------- Credentials ----------
 def get_aspose_creds():
     """Reads credentials from Streamlit secrets or environment variables."""
-    cid = None
-    sec = None
+    cid, sec = None, None
     try:
         cid = st.secrets.get("ASPOSE_CLIENT_ID", None)
         sec = st.secrets.get("ASPOSE_CLIENT_SECRET", None)
@@ -31,7 +32,9 @@ def get_aspose_creds():
     return (str(cid).strip() if cid else None,
             str(sec).strip() if sec else None)
 
+
 ASPOSE_CLIENT_ID, ASPOSE_CLIENT_SECRET = get_aspose_creds()
+
 
 # ---------- Aspose converter ----------
 @st.cache_resource
@@ -39,6 +42,7 @@ def get_words_api():
     if not ASPOSE_CLIENT_ID or not ASPOSE_CLIENT_SECRET:
         return None
     return WordsApi(ASPOSE_CLIENT_ID, ASPOSE_CLIENT_SECRET)
+
 
 def convert_doc_to_docx_aspose(file_bytes: bytes, uploaded_file_name: str) -> bytes:
     """Uses Aspose Words API to convert .doc → .docx in memory."""
@@ -48,8 +52,8 @@ def convert_doc_to_docx_aspose(file_bytes: bytes, uploaded_file_name: str) -> by
     file_stream = io.BytesIO(file_bytes)
     file_stream.name = uploaded_file_name
     request = ConvertDocumentRequest(document=file_stream, format="docx")
-    result = api.convert_document(request)
-    return result
+    return api.convert_document(request)
+
 
 # ---------- Parsing helpers ----------
 def extract_text_from_docx_bytes(docx_bytes: bytes):
@@ -58,23 +62,26 @@ def extract_text_from_docx_bytes(docx_bytes: bytes):
         text = result.value
     return [line.strip() for line in text.split("\n") if line.strip()]
 
-# --- Updated extraction logic (looks at next line) ---
+
 def extract_supplier(paragraphs):
     brand, supplier = None, None
     for i, p in enumerate(paragraphs):
-        if "supplier number" in p.lower():
+        low = p.lower()
+        if "supplier number" in low:
             supplier = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
-        elif "brand" in p.lower():
+        elif "brand" in low:
             brand = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
     if brand and supplier:
         return f"{brand} ({supplier})"
     return brand or supplier or "[Supplier]"
+
 
 def extract_sn_info(paragraphs):
     for i, p in enumerate(paragraphs):
         if "shipping notice" in p.lower():
             return paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
     return "[SN Info]"
+
 
 def extract_article_info(paragraphs):
     for i, p in enumerate(paragraphs):
@@ -83,11 +90,32 @@ def extract_article_info(paragraphs):
             return f"Example SKU {sku}"
     return "[Article Info]"
 
-def extract_number_info(paragraphs):
-    block = [p for p in paragraphs if re.search(r"\d{8,}", p)]
-    return "\n".join(block[:10]) if block else "[Number/size breakdown]"
 
-# ---------- Email Templates ----------
+def extract_number_info(paragraphs):
+    """
+    Pulls out only the EAN/size/qty lines and stops before the 'Generated at' footer.
+    """
+    block = []
+    for p in paragraphs:
+        low = p.lower()
+        if "generated at" in low:
+            break  # stop before footer
+        if re.search(r"\b\d{8,}\b", p) and (
+            "ean" in low or "sku" in low or re.search(r"\b\d{1,2}[a-z]*\b", low)
+        ):
+            block.append(p.strip())
+
+    # Remove duplicates while preserving order
+    seen, clean = set(), []
+    for line in block:
+        if line not in seen:
+            seen.add(line)
+            clean.append(line)
+
+    return "\n".join(clean[:10]) if clean else "[Number/size breakdown]"
+
+
+# ---------- Email templates ----------
 def generate_price_variance_email(supplier, invoice, table, name):
     return f"""Dear {supplier},
 
@@ -102,17 +130,19 @@ If you have further questions, please do not hesitate to reach out.
 Thank you and kind regards,
 {name}"""
 
+
 def generate_article_not_ordered_email(supplier, sn_info, article_info, number_info, name):
     return f"""Dear {supplier},
 
 I hope this email finds you well.
-We have (an) item/s in quarantine storage as it looks like we have not ordered it and therefore we can not receive it/them. The articles have been delivered with {sn_info}.
+We have (an) item/s in quarantine storage as it looks like we have not ordered it and therefore we cannot receive it/them. The articles have been delivered with {sn_info}.
 
 When items cannot be directly received due to specific issues they are sidelined and stored in our quarantine storage area (= a separate area in our warehouse). This additional clarification process is causing capacity losses and unforeseen costs.
 
 {article_info}
 
-We have received {number_info} units of this style.
+We have received:
+{number_info}
 
 We have two options:
 
@@ -126,6 +156,7 @@ If you have further questions, please do not hesitate to reach out.
 
 Thank you and kind regards,
 {name}"""
+
 
 # ---------- MAIN ----------
 if uploaded_file and user_name:
