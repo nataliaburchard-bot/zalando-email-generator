@@ -8,6 +8,14 @@ import streamlit as st
 import mammoth
 from datetime import datetime
 
+# 💡 ADD THIS LINE RIGHT HERE ↓↓↓
+os.environ["CLOUDCONVERT_API_KEY"] = "YOUR_API_KEY_HERE"
+# Replace the text in quotes with your real key (looks like live_xxxxxxxxx)
+
+st.set_page_config(page_title="💌 Zalando Email Generator")
+st.title("💌 Gemini Email Generator")
+
+
 # ---------- CONFIG ----------
 CLOUDCONVERT_API_KEY = st.secrets["CLOUDCONVERT_API_KEY"]  # <-- set this in your env once
 CLOUDCONVERT_API = "https://api.cloudconvert.com/v2/jobs"
