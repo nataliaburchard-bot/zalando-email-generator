@@ -41,7 +41,7 @@ def get_words_api():
     return WordsApi(ASPOSE_CLIENT_ID, ASPOSE_CLIENT_SECRET)
 
 def convert_doc_to_docx_aspose(file_bytes: bytes, uploaded_file_name: str) -> bytes:
-    """Uses Aspose Words API to convert .doc -> .docx in memory."""
+    """Uses Aspose Words API to convert .doc → .docx in memory."""
     api = get_words_api()
     if api is None:
         raise RuntimeError("Aspose credentials missing.")
@@ -58,35 +58,34 @@ def extract_text_from_docx_bytes(docx_bytes: bytes):
         text = result.value
     return [line.strip() for line in text.split("\n") if line.strip()]
 
-# --- New logic for Article Not Ordered autopopulation ---
+# --- Updated extraction logic (looks at next line) ---
 def extract_supplier(paragraphs):
     brand, supplier = None, None
-    for p in paragraphs:
-        if "Supplier Number:" in p:
-            supplier = p.split(":")[-1].strip()
-        elif "Brand:" in p:
-            brand = p.split(":")[-1].strip()
+    for i, p in enumerate(paragraphs):
+        if "supplier number" in p.lower():
+            supplier = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
+        elif "brand" in p.lower():
+            brand = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
     if brand and supplier:
         return f"{brand} ({supplier})"
     return brand or supplier or "[Supplier]"
 
 def extract_sn_info(paragraphs):
-    for p in paragraphs:
-        if "Zalando Shipping Notice Number:" in p:
-            return p.split(":")[-1].strip()
+    for i, p in enumerate(paragraphs):
+        if "shipping notice" in p.lower():
+            return paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
     return "[SN Info]"
 
 def extract_article_info(paragraphs):
-    for p in paragraphs:
-        if "Example SKU:" in p:
-            sku = p.split(":")[-1].strip()
+    for i, p in enumerate(paragraphs):
+        if "example sku" in p.lower():
+            sku = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
             return f"Example SKU {sku}"
     return "[Article Info]"
 
 def extract_number_info(paragraphs):
-    # Grab first numeric-heavy chunk (EAN/Qty table)
-    numeric_lines = [p for p in paragraphs if re.search(r"\d{6,}", p)]
-    return "\n".join(numeric_lines[:10]) if numeric_lines else "[Number/size breakdown]"
+    block = [p for p in paragraphs if re.search(r"\d{8,}", p)]
+    return "\n".join(block[:10]) if block else "[Number/size breakdown]"
 
 # ---------- Email Templates ----------
 def generate_price_variance_email(supplier, invoice, table, name):
@@ -143,13 +142,11 @@ if uploaded_file and user_name:
             status.update(label="Extracting text")
             paragraphs = extract_text_from_docx_bytes(docx_bytes)
 
-        # autopopulate for Article Not Ordered type
         supplier = extract_supplier(paragraphs)
         sn_info = extract_sn_info(paragraphs)
         article_info = extract_article_info(paragraphs)
         number_info = extract_number_info(paragraphs)
 
-        # route by filename
         if "price" in uploaded_file.name.lower():
             invoice = "[Invoice Number]"
             table = "[Table information]"
