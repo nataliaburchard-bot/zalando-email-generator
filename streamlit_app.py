@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
-from docx import Document
 import os
+from docx import Document
 
 st.set_page_config(page_title="Gemini Email Generator", layout="centered")
 
@@ -18,69 +18,79 @@ if uploaded_file:
         f.write(uploaded_file.getbuffer())
 
     if file_name.endswith(".doc"):
-        st.info("Converting .doc to .docx using CloudConvert...")
+        st.info("🔄 Converting .doc to .docx using CloudConvert...")
+
         api_key = os.getenv("CLOUDCONVERT_API_KEY")
         if not api_key:
-            st.error("CloudConvert API key not set.")
+            st.error("❌ CloudConvert API key not set. Please check your environment variables.")
         else:
+            # STEP 1: Get upload URL
+            import_url = "https://api.cloudconvert.com/v2/import/upload"
+            headers = {"Authorization": f"Bearer {api_key}"}
+            import_resp = requests.post(import_url, headers=headers).json()
+
             try:
-                # STEP 1: Create the import task
-                import_response = requests.post(
-                    "https://api.cloudconvert.com/v2/import/upload",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                import_task = import_response.json()["data"]
-                upload_url = import_task["result"]["form"]["url"]
-                upload_params = import_task["result"]["form"]["parameters"]
+                upload_url = import_resp["data"]["url"]
+                upload_file = {'file': open(file_name, 'rb')}
+                upload_result = requests.post(upload_url, files=upload_file)
 
-                # STEP 2: Upload the .doc file
-                with open(file_name, "rb") as f:
-                    files = {'file': (file_name, f)}
-                    upload_params["file"] = files["file"]
-                    upload_response = requests.post(upload_url, data=upload_params, files=files)
+                if upload_result.status_code != 200:
+                    raise Exception("Upload failed.")
 
-                # STEP 3: Create the convert task
-                convert_response = requests.post(
-                    "https://api.cloudconvert.com/v2/convert",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "input": "import-upload",
-                        "file": file_name,
-                        "input_format": "doc",
-                        "output_format": "docx"
+                import_id = import_resp["data"]["id"]
+
+                # STEP 2: Create conversion job
+                job_url = "https://api.cloudconvert.com/v2/jobs"
+                job_data = {
+                    "tasks": {
+                        "import-my-file": {
+                            "operation": "import/upload"
+                        },
+                        "convert-my-file": {
+                            "operation": "convert",
+                            "input": "import-my-file",
+                            "input_format": "doc",
+                            "output_format": "docx"
+                        },
+                        "export-my-file": {
+                            "operation": "export/url",
+                            "input": "convert-my-file"
+                        }
                     }
-                )
-                convert_task = convert_response.json()["data"]
-                task_id = convert_task["id"]
+                }
 
-                # STEP 4: Wait for conversion to finish
-                status = ""
-                while status != "finished":
-                    task_response = requests.get(
-                        f"https://api.cloudconvert.com/v2/tasks/{task_id}",
-                        headers={"Authorization": f"Bearer {api_key}"}
-                    )
-                    status = task_response.json()["data"]["status"]
+                job_resp = requests.post(job_url, headers=headers, json=job_data).json()
+                job_id = job_resp["data"]["id"]
 
-                # STEP 5: Download the .docx result
-                export_url = task_response.json()["data"]["result"]["files"][0]["url"]
-                new_file_name = file_name.replace(".doc", ".docx")
-                r = requests.get(export_url)
-                with open(new_file_name, "wb") as f:
-                    f.write(r.content)
+                # Wait for job to finish
+                import time
+                time.sleep(5)
+                job_status_url = f"https://api.cloudconvert.com/v2/jobs/{job_id}"
+                job_result = requests.get(job_status_url, headers=headers).json()
 
-                # STEP 6: Parse and preview
-                doc = Document(new_file_name)
+                export_url = job_result["data"]["tasks"][-1]["result"]["files"][0]["url"]
+                output_name = file_name.replace(".doc", ".docx")
+
+                # Download the converted file
+                download_resp = requests.get(export_url)
+                with open(output_name, "wb") as out_file:
+                    out_file.write(download_resp.content)
+
+                st.success("✅ Conversion successful. Processing the .docx file now...")
+
+                # Extract text from converted docx
+                doc = Document(output_name)
                 text = "\n".join([para.text for para in doc.paragraphs])
                 st.text_area("📨 Email Preview", text, height=300)
 
             except Exception as e:
-                st.error(f"Conversion failed: {e}")
+                st.error(f"❌ Conversion failed: {e}")
 
     else:
+        # Directly handle .docx files
         try:
             doc = Document(file_name)
             text = "\n".join([para.text for para in doc.paragraphs])
             st.text_area("📨 Email Preview", text, height=300)
         except Exception as e:
-            st.error(f"Failed to read .docx: {e}")
+            st.error(f"❌ Failed to read .docx file: {e}")
