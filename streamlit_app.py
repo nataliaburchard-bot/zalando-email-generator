@@ -1,4 +1,3 @@
-
 import streamlit as st
 import requests
 from docx import Document
@@ -35,8 +34,7 @@ if uploaded_file:
         # Directly handle .docx
         try:
             doc = Document(file_name)
-            text = "
-".join([para.text for para in doc.paragraphs])
+            text = "\n".join([para.text for para in doc.paragraphs])
             st.text_area("📨 Email Preview", text, height=300)
         except Exception as e:
             st.error(f"Failed to read .docx: {e}")
