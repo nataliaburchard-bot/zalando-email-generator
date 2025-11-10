@@ -35,10 +35,10 @@ def extract_text_from_docx(file):
 def extract_text_from_doc(file):
     with open("temp.doc", "wb") as f:
         f.write(file.read())
-    with open("temp.doc", "rb") as f:
-        result = mammoth.convert_to_text(f)
-        text = result.value
-        return [line.strip() for line in text.split("\n") if line.strip() != ""]
+   with open("temp.doc", "rb") as f:
+    result = mammoth.extract_raw_text(f)
+    text = result.value
+    return [line.strip() for line in text.split("\n") if line.strip() != ""]
 
 
 # ========== DATA EXTRACTION HELPERS ==========
