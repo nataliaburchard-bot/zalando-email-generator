@@ -92,25 +92,22 @@ def extract_article_info(paragraphs):
 
 
 def extract_number_info(paragraphs):
-    """Pulls out only the EAN/size/qty lines and stops before the 'Generated at' footer."""
-    block = []
-    for p in paragraphs:
-        low = p.lower()
-        if "generated at" in low:
-            break  # stop before footer
-        if re.search(r"\b\d{8,}\b", p) and (
-            "ean" in low or "sku" in low or re.search(r"\b\d{1,2}[a-z]*\b", low)
-        ):
-            block.append(p.strip())
-
-    # Remove duplicates while preserving order
-    seen, clean = set(), []
-    for line in block:
-        if line not in seen:
-            seen.add(line)
-            clean.append(line)
-
-    return "\n".join(clean[:10]) if clean else "[Number/size breakdown]"
+    """
+    Matches Jira’s pattern:
+    EAN (13 digits)
+    next line -> size
+    next line -> quantity
+    next line -> SKU
+    """
+    lines = []
+    for i, p in enumerate(paragraphs):
+        if re.fullmatch(r"\d{13}", p):  # found an EAN
+            ean = p
+            size = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else ""
+            qty = paragraphs[i + 2].strip() if i + 2 < len(paragraphs) else ""
+            sku = paragraphs[i + 3].strip() if i + 3 < len(paragraphs) else ""
+            lines.append(f"{ean}  {size}  {qty}  {sku}")
+    return "\n".join(lines) if lines else "[Number/size breakdown]"
 
 
 # ---------- Email templates ----------
@@ -171,11 +168,10 @@ if uploaded_file and user_name:
             status.update(label="Extracting text")
             paragraphs = extract_text_from_docx_bytes(docx_bytes)
 
-        # ---- temporary debug viewer ----
+        # Optional debug viewer
         if st.checkbox("🔍 Show extracted text for debugging"):
             for p in paragraphs:
                 st.write(p)
-        # --------------------------------
 
         supplier = extract_supplier(paragraphs)
         sn_info = extract_sn_info(paragraphs)
