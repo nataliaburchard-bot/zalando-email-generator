@@ -47,12 +47,12 @@ def convert_doc_to_docx_aspose(file_bytes: bytes) -> bytes:
     api = get_words_api()
     if api is None:
         raise RuntimeError("Aspose credentials missing. Set ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET.")
-    # Aspose expects a file-like object
-    # Create a fake file object that Aspose expects
-file_stream = io.BytesIO(file_bytes)
-file_stream.name = uploaded_file.name  # give it a name attribute
-request = ConvertDocumentRequest(document=file_stream, format="docx")
 
+    # Aspose expects a file-like object with a name attribute
+    file_stream = io.BytesIO(file_bytes)
+    file_stream.name = "temp.doc"  # fake name for Aspose
+
+    request = ConvertDocumentRequest(document=file_stream, format="docx")
     result = api.convert_document(request)  # returns bytes
     return result
 
