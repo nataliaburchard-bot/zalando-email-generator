@@ -40,20 +40,15 @@ def get_words_api():
         return None
     return WordsApi(ASPOSE_CLIENT_ID, ASPOSE_CLIENT_SECRET)
 
-def convert_doc_to_docx_aspose(file_bytes: bytes) -> bytes:
-    """
-    Uses Aspose Words API to convert .doc -> .docx in memory.
-    """
+def convert_doc_to_docx_aspose(file_bytes: bytes, uploaded_file_name: str) -> bytes:
+    """Uses Aspose Words API to convert .doc -> .docx in memory."""
     api = get_words_api()
     if api is None:
-        raise RuntimeError("Aspose credentials missing. Set ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET.")
-
-    # Aspose expects a file-like object with a name attribute
+        raise RuntimeError("Aspose credentials missing.")
     file_stream = io.BytesIO(file_bytes)
-    file_stream.name = "temp.doc"  # fake name for Aspose
-
+    file_stream.name = uploaded_file_name
     request = ConvertDocumentRequest(document=file_stream, format="docx")
-    result = api.convert_document(request)  # returns bytes
+    result = api.convert_document(request)
     return result
 
 # ---------- Parsing helpers ----------
@@ -63,23 +58,35 @@ def extract_text_from_docx_bytes(docx_bytes: bytes):
         text = result.value
     return [line.strip() for line in text.split("\n") if line.strip()]
 
+# --- New logic for Article Not Ordered autopopulation ---
 def extract_supplier(paragraphs):
+    brand, supplier = None, None
     for p in paragraphs:
-        m = re.search(r"Supplier:\s*(.*)", p, flags=re.I)
-        if m:
-            return m.group(1).strip()
-    return "[Supplier]"
+        if "Supplier Number:" in p:
+            supplier = p.split(":")[-1].strip()
+        elif "Brand:" in p:
+            brand = p.split(":")[-1].strip()
+    if brand and supplier:
+        return f"{brand} ({supplier})"
+    return brand or supplier or "[Supplier]"
 
-def extract_invoice_number(paragraphs):
+def extract_sn_info(paragraphs):
     for p in paragraphs:
-        m = re.search(r"Supplier Invoice Number:\s*(.*)", p, flags=re.I)
-        if m:
-            return m.group(1).strip()
-    return "[Invoice Number]"
+        if "Zalando Shipping Notice Number:" in p:
+            return p.split(":")[-1].strip()
+    return "[SN Info]"
 
-def extract_table(paragraphs):
-    rows = [p for p in paragraphs if ("," in p and any(c.isdigit() for c in p))]
-    return "\n".join(rows) if rows else "[Table information]"
+def extract_article_info(paragraphs):
+    for p in paragraphs:
+        if "Example SKU:" in p:
+            sku = p.split(":")[-1].strip()
+            return f"Example SKU {sku}"
+    return "[Article Info]"
+
+def extract_number_info(paragraphs):
+    # Grab first numeric-heavy chunk (EAN/Qty table)
+    numeric_lines = [p for p in paragraphs if re.search(r"\d{6,}", p)]
+    return "\n".join(numeric_lines[:10]) if numeric_lines else "[Number/size breakdown]"
 
 # ---------- Email Templates ----------
 def generate_price_variance_email(supplier, invoice, table, name):
@@ -125,29 +132,32 @@ Thank you and kind regards,
 if uploaded_file and user_name:
     try:
         if not (ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET):
-            st.error("Missing Aspose credentials. Add them to .streamlit/secrets.toml as ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET.")
+            st.error("Missing Aspose credentials.")
             st.stop()
 
         with st.status("Processing file…", expanded=False) as status:
             status.update(label="Converting .doc → .docx with Aspose")
             file_bytes = uploaded_file.read()
-            docx_bytes = convert_doc_to_docx_aspose(file_bytes)
+            docx_bytes = convert_doc_to_docx_aspose(file_bytes, uploaded_file.name)
 
             status.update(label="Extracting text")
             paragraphs = extract_text_from_docx_bytes(docx_bytes)
 
+        # autopopulate for Article Not Ordered type
         supplier = extract_supplier(paragraphs)
-        invoice = extract_invoice_number(paragraphs)
-        table = extract_table(paragraphs)
+        sn_info = extract_sn_info(paragraphs)
+        article_info = extract_article_info(paragraphs)
+        number_info = extract_number_info(paragraphs)
 
         # route by filename
         if "price" in uploaded_file.name.lower():
+            invoice = "[Invoice Number]"
+            table = "[Table information]"
             email_body = generate_price_variance_email(supplier, invoice, table, user_name)
         else:
-            sn_info = "[SN Info from .doc]"
-            article_info = table
-            number_info = "[Number/size breakdown]"
-            email_body = generate_article_not_ordered_email(supplier, sn_info, article_info, number_info, user_name)
+            email_body = generate_article_not_ordered_email(
+                supplier, sn_info, article_info, number_info, user_name
+            )
 
         st.success("✅ File processed successfully!")
         st.markdown("**📧 Email Preview**")
