@@ -92,9 +92,7 @@ def extract_article_info(paragraphs):
 
 
 def extract_number_info(paragraphs):
-    """
-    Pulls out only the EAN/size/qty lines and stops before the 'Generated at' footer.
-    """
+    """Pulls out only the EAN/size/qty lines and stops before the 'Generated at' footer."""
     block = []
     for p in paragraphs:
         low = p.lower()
@@ -172,10 +170,12 @@ if uploaded_file and user_name:
 
             status.update(label="Extracting text")
             paragraphs = extract_text_from_docx_bytes(docx_bytes)
-# temporary debug view
-if st.checkbox("🔍 Show extracted text for debugging"):
-    for p in paragraphs:
-        st.write(p)
+
+        # ---- temporary debug viewer ----
+        if st.checkbox("🔍 Show extracted text for debugging"):
+            for p in paragraphs:
+                st.write(p)
+        # --------------------------------
 
         supplier = extract_supplier(paragraphs)
         sn_info = extract_sn_info(paragraphs)
