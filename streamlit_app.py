@@ -1,7 +1,16 @@
-import streamlit as st
+import os
 import re
+import io
+import time
+import json
+import requests
+import streamlit as st
 import mammoth
 from datetime import datetime
+
+# ---------- CONFIG ----------
+CLOUDCONVERT_API_KEY = os.getenv("CLOUDCONVERT_API_KEY")  # <-- set this in your env once
+CLOUDCONVERT_API = "https://api.cloudconvert.com/v2/jobs"
 
 st.set_page_config(page_title="💌 Zalando Email Generator")
 st.title("💌 Gemini Email Generator")
@@ -9,34 +18,98 @@ st.title("💌 Gemini Email Generator")
 user_name = st.text_input("Your name for sign-off (e.g., Natalia Burchard)")
 uploaded_file = st.file_uploader("Upload .doc Jira Ticket", type=["doc"])
 
-def extract_text_from_doc(file):
-    with open("temp.doc", "wb") as f:
-        f.write(file.read())
-    with open("temp.doc", "rb") as f:
-        result = mammoth.extract_raw_text(f)
+# ---------- CloudConvert helpers ----------
+def cc_create_job():
+    """
+    Create a job with 3 tasks:
+    1) import/upload  -> we'll upload the file to the URL they return
+    2) convert        -> doc -> docx
+    3) export/url     -> we download the converted file from a signed URL
+    """
+    payload = {
+        "tasks": {
+            "import-my-file": {"operation": "import/upload"},
+            "convert-my-file": {
+                "operation": "convert",
+                "input": "import-my-file",
+                "input_format": "doc",
+                "output_format": "docx"
+            },
+            "export-my-file": {"operation": "export/url", "input": "convert-my-file"}
+        }
+    }
+    headers = {"Authorization": f"Bearer {CLOUDCONVERT_API_KEY}",
+               "Content-Type": "application/json"}
+    r = requests.post(CLOUDCONVERT_API, headers=headers, data=json.dumps(payload))
+    r.raise_for_status()
+    return r.json()["data"]
+
+def cc_upload_to_signed_url(job_data, file_bytes, filename):
+    # Find the import task info with the signed URL
+    import_task = next(t for t in job_data["tasks"] if t["name"] == "import-my-file")
+    upload_url = import_task["result"]["form"]["url"]
+    form_params = import_task["result"]["form"]["parameters"]
+
+    files = {"file": (filename, file_bytes)}
+    r = requests.post(upload_url, data=form_params, files=files)
+    # CloudConvert returns 204 No Content on success
+    if r.status_code not in (200, 201, 204):
+        raise RuntimeError(f"Upload failed: {r.status_code} {r.text}")
+
+def cc_poll_until_finished(job_id, timeout_s=120, poll_every_s=2):
+    headers = {"Authorization": f"Bearer {CLOUDCONVERT_API_KEY}"}
+    t0 = time.time()
+    while True:
+        r = requests.get(f"{CLOUDCONVERT_API}/{job_id}", headers=headers)
+        r.raise_for_status()
+        data = r.json()["data"]
+        status = data["status"]
+        if status == "finished":
+            return data
+        if status == "error":
+            # Find task with error to display details
+            bad = next((t for t in data["tasks"] if t["status"] == "error"), None)
+            msg = bad["message"] if bad and "message" in bad else "Unknown conversion error"
+            raise RuntimeError(msg)
+        if time.time() - t0 > timeout_s:
+            raise TimeoutError("CloudConvert job timed out")
+        time.sleep(poll_every_s)
+
+def cc_download_converted_docx(job_data) -> bytes:
+    export_task = next(t for t in job_data["tasks"] if t["name"] == "export-my-file")
+    file_url = export_task["result"]["files"][0]["url"]
+    r = requests.get(file_url)
+    r.raise_for_status()
+    return r.content
+
+# ---------- Parsing helpers ----------
+def extract_text_from_docx_bytes(docx_bytes: bytes):
+    with io.BytesIO(docx_bytes) as memf:
+        result = mammoth.extract_raw_text(memf)
         text = result.value
-        return [line.strip() for line in text.split("\n") if line.strip() != ""]
+    return [line.strip() for line in text.split("\n") if line.strip()]
 
 def extract_supplier(paragraphs):
     for p in paragraphs:
-        match = re.search(r"Supplier:\s*(.*)", p)
-        if match:
-            return match.group(1).strip()
+        m = re.search(r"Supplier:\s*(.*)", p, flags=re.I)
+        if m:
+            return m.group(1).strip()
     return "[Supplier]"
 
 def extract_invoice_number(paragraphs):
     for p in paragraphs:
-        match = re.search(r"Supplier Invoice Number:\s*(.*)", p)
-        if match:
-            return match.group(1).strip()
+        m = re.search(r"Supplier Invoice Number:\s*(.*)", p, flags=re.I)
+        if m:
+            return m.group(1).strip()
     return "[Invoice Number]"
 
 def extract_table(paragraphs):
-    table_data = []
+    table_rows = []
     for p in paragraphs:
-        if "," in p and any(char.isdigit() for char in p):
-            table_data.append(p)
-    return "\n".join(table_data) if table_data else "[Table information]"
+        # crude but effective for Jira dumps: lines with commas & digits look like row dumps
+        if "," in p and any(c.isdigit() for c in p):
+            table_rows.append(p)
+    return "\n".join(table_rows) if table_rows else "[Table information]"
 
 def generate_price_variance_email(supplier, invoice, table, name):
     return f"""Dear {supplier},
@@ -82,17 +155,34 @@ If you have further questions, please do not hesitate to reach out.
 Thank you and kind regards,
 {name}"""
 
-# MAIN LOGIC
+# ---------- MAIN ----------
 if uploaded_file and user_name:
     try:
-        st.info("Processing file...")
+        if not CLOUDCONVERT_API_KEY:
+            st.error("CLOUDCONVERT_API_KEY is not set in the environment.")
+            st.stop()
 
-        paragraphs = extract_text_from_doc(uploaded_file)
+        with st.status("Processing file…", expanded=False) as status:
+            status.update(label="Creating conversion job")
+            job = cc_create_job()
+
+            status.update(label="Uploading .doc to CloudConvert")
+            file_bytes = uploaded_file.read()
+            cc_upload_to_signed_url(job, file_bytes, uploaded_file.name)
+
+            status.update(label="Converting to .docx")
+            finished_job = cc_poll_until_finished(job["id"])
+
+            status.update(label="Downloading converted .docx")
+            docx_bytes = cc_download_converted_docx(finished_job)
+
+        paragraphs = extract_text_from_docx_bytes(docx_bytes)
 
         supplier = extract_supplier(paragraphs)
         invoice = extract_invoice_number(paragraphs)
         table = extract_table(paragraphs)
 
+        # simple routing: use filename to decide template
         if "price" in uploaded_file.name.lower():
             email_body = generate_price_variance_email(supplier, invoice, table, user_name)
         else:
