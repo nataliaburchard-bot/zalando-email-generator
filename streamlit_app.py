@@ -172,6 +172,10 @@ if uploaded_file and user_name:
 
             status.update(label="Extracting text")
             paragraphs = extract_text_from_docx_bytes(docx_bytes)
+# temporary debug view
+if st.checkbox("🔍 Show extracted text for debugging"):
+    for p in paragraphs:
+        st.write(p)
 
         supplier = extract_supplier(paragraphs)
         sn_info = extract_sn_info(paragraphs)
