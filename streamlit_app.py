@@ -1,8 +1,8 @@
 import streamlit as st
-import requests
 import base64
 import os
 import re
+import mammoth
 from docx import Document
 from datetime import datetime
 
@@ -17,69 +17,21 @@ user_name = st.text_input("Your name for sign-off (e.g., Natalia Burchard)")
 # Upload DOC or DOCX file
 uploaded_file = st.file_uploader("Upload .doc or .docx Jira Ticket", type=["doc", "docx"])
 
-# Conversion function using CloudConvert
-CLOUDCONVERT_API_KEY = os.getenv("CLOUDCONVERT_API_KEY")
+# ---- TEXT EXTRACTION ----
+def extract_text_from_doc(uploaded_file):
+    """Handles both .doc and .docx using mammoth for .doc"""
+    if uploaded_file.name.endswith(".docx"):
+        doc = Document(uploaded_file)
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip() != ""]
+        return paragraphs
+    else:
+        # Convert .doc to plain text using mammoth
+        with uploaded_file as doc_file:
+            result = mammoth.convert_to_text(doc_file)
+            text = result.value
+            return [line.strip() for line in text.splitlines() if line.strip() != ""]
 
-def convert_doc_to_docx_cloudconvert(uploaded_file):
-    upload_response = requests.post(
-        "https://api.cloudconvert.com/v2/import/upload",
-        headers={"Authorization": f"Bearer {CLOUDCONVERT_API_KEY}"}
-    )
-    import_id = upload_response.json()["data"]["id"]
-    upload_url = upload_response.json()["data"]["url"]
-
-    requests.put(upload_url, data=uploaded_file.getvalue())
-
-    payload = {
-        "tasks": {
-            "import-my-file": {
-                "operation": "import/upload"
-            },
-            "convert-my-file": {
-                "operation": "convert",
-                "input": "import-my-file",
-                "input_format": "doc",
-                "output_format": "docx"
-            },
-            "export-my-file": {
-                "operation": "export/url",
-                "input": "convert-my-file"
-            }
-        }
-    }
-
-    job_response = requests.post(
-        "https://api.cloudconvert.com/v2/jobs",
-        headers={"Authorization": f"Bearer {CLOUDCONVERT_API_KEY}", "Content-Type": "application/json"},
-        json=payload
-    )
-
-    job_id = job_response.json()["data"]["id"]
-
-    import_task_response = requests.get(
-        f"https://api.cloudconvert.com/v2/jobs/{job_id}",
-        headers={"Authorization": f"Bearer {CLOUDCONVERT_API_KEY}"}
-    )
-
-    tasks = import_task_response.json()["data"]["tasks"]
-    export_task = next(task for task in tasks if task["name"] == "export-my-file")
-
-    try:
-        download_url = export_task["result"]["files"][0]["url"]
-    except KeyError:
-        st.error("❌ Could not retrieve download URL. Check CloudConvert job response.")
-        st.json(export_task)
-        return None
-
-    docx_data = requests.get(download_url).content
-    return docx_data
-
-def extract_text_from_docx(docx_bytes):
-    with open("temp.docx", "wb") as f:
-        f.write(docx_bytes)
-    doc = Document("temp.docx")
-    return [p.text for p in doc.paragraphs if p.text.strip() != ""]
-
+# ---- FIELD EXTRACTION ----
 def extract_supplier(paragraphs):
     for p in paragraphs:
         match = re.search(r"Supplier:\s*(.*)", p)
@@ -101,6 +53,7 @@ def extract_table(paragraphs):
             table_data.append(p)
     return "\n".join(table_data) if table_data else "[Table information]"
 
+# ---- EMAIL TEMPLATES ----
 def generate_price_variance_email(supplier, invoice, table, name):
     return f"""Dear {supplier},
 
@@ -145,19 +98,16 @@ If you have further questions, please do not hesitate to reach out.
 Thank you and kind regards,
 {name}"""
 
-# MAIN LOGIC
+# ---- MAIN LOGIC ----
 if uploaded_file and user_name:
-    st.info("Converting .doc to .docx using CloudConvert API...")
-    converted = convert_doc_to_docx_cloudconvert(uploaded_file)
+    st.info("Processing file...")
 
-    if converted:
-        st.success("✅ Conversion successful!")
-        text = extract_text_from_docx(converted)
+    try:
+        text = extract_text_from_doc(uploaded_file)
         supplier = extract_supplier(text)
         invoice = extract_invoice_number(text)
         table = extract_table(text)
 
-        # Determine email type
         if "price" in uploaded_file.name.lower():
             email_body = generate_price_variance_email(supplier, invoice, table, user_name)
         else:
@@ -166,8 +116,10 @@ if uploaded_file and user_name:
             number_info = "[Number/size breakdown]"
             email_body = generate_article_not_ordered_email(supplier, sn_info, article_info, number_info, user_name)
 
+        st.success("✅ File processed successfully!")
         st.markdown("**📧 Email Preview**")
         st.text_area("", email_body, height=500)
 
-    else:
-        st.error("❌ File conversion failed. Please try again.")
+    except Exception as e:
+        st.error(f"❌ Something went wrong: {e}")
+
