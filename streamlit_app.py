@@ -6,25 +6,67 @@ import json
 import requests
 import streamlit as st
 import mammoth
-from datetime import datetime
-
-# 💡 Add your real CloudConvert API key below
-os.environ["CLOUDCONVERT_API_KEY"] = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiIxIiwianRpIjoiOTc1M2RkNjU3M2FlNTQ5NWU4ZTdhM2U1OWE1MWY2ZjhjNzFiNjQxODA2ZWI4NzA3MWFkNmU1NDcxNzlmZTY5ZGZkZjM3YzQ0MTVhNGExMDUiLCJpYXQiOjE3NjI3ODAxMDQuOTQ1ODQzLCJuYmYiOjE3NjI3ODAxMDQuOTQ1ODQ0LCJleHAiOjQ5MTg0NTM3MDQuOTM5MDc4LCJzdWIiOiI3MzQyODQ5NyIsInNjb3BlcyI6WyJ0YXNrLnJlYWQiLCJ0YXNrLndyaXRlIiwidXNlci5yZWFkIl19.cba1xzDx_RwGp2BGZVlcoBShNDLGbFTftpuV5zJf1hLk7jV-j2Wfin7zr-s6fiWF1wMOkpac4cMy_QNSEyI5kBLzy_RLsTmdluBNgqF6UvF5qOdE_fneHKIVH1mkUrgVENPsf9mmoXJbg7oOW9D9nmQA8wFZXaxboERZGkpeeackF66_cvOXOWt-8Yy05tMt5TBy7YtJ4zaw1BKMEwid0wotWLvxkmfiTjPun7GlPF-Jdsn0KVwdl4lEX7GNv4zPsJHBvEXdnkymiB3UmL3wACOyrsYJSO1EvO_qG93Y1VWxTM3Jb0Ynrfi_lOw3oXtywVyv0SZWwKmJgzntovky61p8LkLT-C8MGkDSSHv5zx2AIGC27Zh1qrbXDxuJeLVShf0v36j454W2sLHkQkhyp7yuNWV5risjWwQx96DHQQaW2eMJEV-mUAsxdDEp9i1KmVpW-3rB_MH6TdXmvKBKBmMjsPm88fvsApdnappYs3rxZOu3vBLBLxSbVE9BuWPbTs0NBMzoM1xkq7YrIpSkjMgyLarQMYfwyF_sq9Bi52p7P7C52LluREcrSEB4oKOT_Y6dzT7KCj4LjE8O4P8DVhuX0R6L9To-cLUlHWf5IptSY2Y2K3HdFmBq4auJJkh3A6w_bgfvJNtPTD5WTc80ur1QpvOJr-gFwoNw4QomH_g"  # replace with your actual key
 
 # ---------- CONFIG ----------
-CLOUDCONVERT_API_KEY = os.getenv("CLOUDCONVERT_API_KEY")
-CLOUDCONVERT_API = "https://api.cloudconvert.com/v2/jobs"
+CLOUDCONVERT_API = "https://api.cloudconvert.com/v2"
 
-# ---------- STREAMLIT UI ----------
 st.set_page_config(page_title="💌 Zalando Email Generator")
-st.title("💌 Gemini Email Generator")
+st.title("💌 Zalando Email Generator")
 
-user_name = st.text_input("Your name for sign-off (e.g., Natalia Burchard)")
+# --- UI ---
+user_name = st.text_input("Your name for sign-off (e.g., Natalia)")
 uploaded_file = st.file_uploader("Upload .doc Jira Ticket", type=["doc"])
+
+# ---------- API KEY HANDLING ----------
+def get_api_key() -> str | None:
+    """
+    Prefer Streamlit secrets; fall back to env var.
+    Also strip stray quotes/spaces that break auth.
+    """
+    key = None
+    try:
+        # secrets if available
+        key = st.secrets.get("CLOUDCONVERT_API_KEY", None)
+    except Exception:
+        pass
+    if not key:
+        key = os.environ.get("CLOUDCONVERT_API_KEY")
+    if key:
+        key = str(key).strip().strip('"').strip("'")
+    return key
+
+API_KEY = get_api_key()
+
+def auth_headers():
+    # Use both Authorization and X-API-KEY just in case
+    return {
+        "Authorization": f"Bearer {API_KEY}",
+        "X-API-KEY": API_KEY,
+        "Content-Type": "application/json"
+    }
+
+def mask(k: str) -> str:
+    if not k:
+        return "—"
+    if len(k) <= 8:
+        return "*" * len(k)
+    return f"{k[:4]}***{k[-4:]}"
+
+def verify_api_key() -> None:
+    """
+    Call /users/me to confirm the key is valid *before* creating jobs.
+    Raises with a clear message if unauthorized.
+    """
+    r = requests.get(f"{CLOUDCONVERT_API}/users/me", headers=auth_headers())
+    if r.status_code == 401:
+        raise RuntimeError(
+            "CloudConvert rejected the API key (401 Unauthorized). "
+            "Double-check the key is correct, active, and not copied with spaces."
+        )
+    r.raise_for_status()
 
 # ---------- CloudConvert helpers ----------
 def cc_create_job():
-    """Create a CloudConvert job to upload, convert, and export a file"""
     payload = {
         "tasks": {
             "import-my-file": {"operation": "import/upload"},
@@ -37,16 +79,11 @@ def cc_create_job():
             "export-my-file": {"operation": "export/url", "input": "convert-my-file"}
         }
     }
-    headers = {
-        "Authorization": f"Bearer {CLOUDCONVERT_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    r = requests.post(CLOUDCONVERT_API, headers=headers, data=json.dumps(payload))
+    r = requests.post(f"{CLOUDCONVERT_API}/jobs", headers=auth_headers(), data=json.dumps(payload))
     r.raise_for_status()
     return r.json()["data"]
 
 def cc_upload_to_signed_url(job_data, file_bytes, filename):
-    """Upload the .doc file to CloudConvert's signed URL"""
     import_task = next(t for t in job_data["tasks"] if t["name"] == "import-my-file")
     upload_url = import_task["result"]["form"]["url"]
     form_params = import_task["result"]["form"]["parameters"]
@@ -56,17 +93,14 @@ def cc_upload_to_signed_url(job_data, file_bytes, filename):
         raise RuntimeError(f"Upload failed: {r.status_code} {r.text}")
 
 def cc_poll_until_finished(job_id, timeout_s=120, poll_every_s=2):
-    """Poll CloudConvert until the job finishes or fails"""
-    headers = {"Authorization": f"Bearer {CLOUDCONVERT_API_KEY}"}
     t0 = time.time()
     while True:
-        r = requests.get(f"{CLOUDCONVERT_API}/{job_id}", headers=headers)
+        r = requests.get(f"{CLOUDCONVERT_API}/jobs/{job_id}", headers=auth_headers())
         r.raise_for_status()
         data = r.json()["data"]
-        status = data["status"]
-        if status == "finished":
+        if data["status"] == "finished":
             return data
-        if status == "error":
+        if data["status"] == "error":
             bad = next((t for t in data["tasks"] if t["status"] == "error"), None)
             msg = bad["message"] if bad and "message" in bad else "Unknown conversion error"
             raise RuntimeError(msg)
@@ -75,7 +109,6 @@ def cc_poll_until_finished(job_id, timeout_s=120, poll_every_s=2):
         time.sleep(poll_every_s)
 
 def cc_download_converted_docx(job_data) -> bytes:
-    """Download the converted .docx file"""
     export_task = next(t for t in job_data["tasks"] if t["name"] == "export-my-file")
     file_url = export_task["result"]["files"][0]["url"]
     r = requests.get(file_url)
@@ -90,6 +123,7 @@ def extract_text_from_docx_bytes(docx_bytes: bytes):
     return [line.strip() for line in text.split("\n") if line.strip()]
 
 def extract_supplier(paragraphs):
+    import re
     for p in paragraphs:
         m = re.search(r"Supplier:\s*(.*)", p, flags=re.I)
         if m:
@@ -97,6 +131,7 @@ def extract_supplier(paragraphs):
     return "[Supplier]"
 
 def extract_invoice_number(paragraphs):
+    import re
     for p in paragraphs:
         m = re.search(r"Supplier Invoice Number:\s*(.*)", p, flags=re.I)
         if m:
@@ -104,11 +139,8 @@ def extract_invoice_number(paragraphs):
     return "[Invoice Number]"
 
 def extract_table(paragraphs):
-    table_rows = []
-    for p in paragraphs:
-        if "," in p and any(c.isdigit() for c in p):
-            table_rows.append(p)
-    return "\n".join(table_rows) if table_rows else "[Table information]"
+    rows = [p for p in paragraphs if ("," in p and any(c.isdigit() for c in p))]
+    return "\n".join(rows) if rows else "[Table information]"
 
 def generate_price_variance_email(supplier, invoice, table, name):
     return f"""Dear {supplier},
@@ -150,13 +182,19 @@ Thank you and kind regards,
 {name}"""
 
 # ---------- MAIN ----------
+# Show what key the app sees (masked) so you can confirm it's actually loaded.
+st.caption(f"CloudConvert API key detected: **{mask(API_KEY)}**")
+
 if uploaded_file and user_name:
     try:
-        if not CLOUDCONVERT_API_KEY:
-            st.error("CLOUDCONVERT_API_KEY is not set in the environment.")
+        if not API_KEY:
+            st.error("No CloudConvert API key found. Add it to st.secrets['CLOUDCONVERT_API_KEY'] or set the CLOUDCONVERT_API_KEY env var.")
             st.stop()
 
         with st.status("Processing file…", expanded=False) as status:
+            status.update(label="Verifying API key")
+            verify_api_key()
+
             status.update(label="Creating conversion job")
             job = cc_create_job()
 
@@ -181,9 +219,7 @@ if uploaded_file and user_name:
             sn_info = "[SN Info from .doc]"
             article_info = table
             number_info = "[Number/size breakdown]"
-            email_body = generate_article_not_ordered_email(
-                supplier, sn_info, article_info, number_info, user_name
-            )
+            email_body = generate_article_not_ordered_email(supplier, sn_info, article_info, number_info, user_name)
 
         st.success("✅ File processed successfully!")
         st.markdown("**📧 Email Preview**")
