@@ -1,3 +1,4 @@
 streamlit
 mammoth
 requests
+aspose-words-cloud
