@@ -1,9 +1,7 @@
 import os
 import io
 import re
-import json
 import streamlit as st
-from streamlit.components.v1 import html
 import mammoth
 
 # Aspose SDK
@@ -23,7 +21,8 @@ uploaded_file = st.file_uploader("Upload .doc Jira Ticket", type=["doc"])
 # ---------- Credentials ----------
 def get_aspose_creds():
     """Reads credentials from Streamlit secrets or environment variables."""
-    cid, sec = None, None
+    cid = None
+    sec = None
     try:
         cid = st.secrets.get("ASPOSE_CLIENT_ID", None)
         sec = st.secrets.get("ASPOSE_CLIENT_SECRET", None)
@@ -33,7 +32,6 @@ def get_aspose_creds():
     sec = sec or os.getenv("ASPOSE_CLIENT_SECRET")
     return (str(cid).strip() if cid else None,
             str(sec).strip() if sec else None)
-
 
 ASPOSE_CLIENT_ID, ASPOSE_CLIENT_SECRET = get_aspose_creds()
 
@@ -46,15 +44,16 @@ def get_words_api():
     return WordsApi(ASPOSE_CLIENT_ID, ASPOSE_CLIENT_SECRET)
 
 
-def convert_doc_to_docx_aspose(file_bytes: bytes, uploaded_file_name: str) -> bytes:
-    """Uses Aspose Words API to convert .doc → .docx in memory."""
+def convert_doc_to_docx_aspose(file_bytes: bytes, filename: str) -> bytes:
+    """Uses Aspose Words API to convert .doc -> .docx in memory."""
     api = get_words_api()
     if api is None:
         raise RuntimeError("Aspose credentials missing.")
     file_stream = io.BytesIO(file_bytes)
-    file_stream.name = uploaded_file_name
+    file_stream.name = filename
     request = ConvertDocumentRequest(document=file_stream, format="docx")
-    return api.convert_document(request)
+    result = api.convert_document(request)
+    return result
 
 
 # ---------- Parsing helpers ----------
@@ -66,114 +65,119 @@ def extract_text_from_docx_bytes(docx_bytes: bytes):
 
 
 def extract_supplier(paragraphs):
-    brand, supplier = None, None
-    for i, p in enumerate(paragraphs):
-        low = p.lower()
-        if "supplier number" in low:
-            supplier = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
-        elif "brand" in low:
-            brand = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
-    if brand and supplier:
-        return f"{brand} ({supplier})"
-    return brand or supplier or "[Supplier]"
+    for p in paragraphs:
+        m = re.search(r"Brand:\s*(.*)", p, flags=re.I)
+        if m:
+            brand = m.group(1).strip()
+            code_match = re.search(r"Supplier Number:\s*(\S+)", " ".join(paragraphs))
+            return f"{brand} ({code_match.group(1)})" if code_match else brand
+    return "[Supplier]"
 
 
-def extract_sn_info(paragraphs):
-    for i, p in enumerate(paragraphs):
-        if "shipping notice" in p.lower():
-            return paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
-    return "[SN Info]"
+def extract_invoice_number(paragraphs):
+    for p in paragraphs:
+        m = re.search(r"Supplier Invoice Number:\s*(.*)", p, flags=re.I)
+        if m:
+            return m.group(1).strip()
+    return "[Invoice Number]"
 
 
-def extract_article_info(paragraphs):
-    for i, p in enumerate(paragraphs):
-        if "example sku" in p.lower():
-            sku = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else p
-            return f"Example SKU {sku}"
-    return "[Article Info]"
+def extract_sn_number(paragraphs):
+    for p in paragraphs:
+        m = re.search(r"(?:Shipping Notice|Zalando Shipping Notice Number):\s*(\S+)", p, flags=re.I)
+        if m:
+            return m.group(1).strip()
+    return "[SN Number]"
 
 
-def extract_number_info(paragraphs):
-    """
-    Matches Jira’s pattern:
-    EAN (13 digits)
-    next line -> size
-    next line -> quantity
-    next line -> SKU
-    Formats them neatly as separate blocks.
-    """
-    blocks = []
-    for i, p in enumerate(paragraphs):
-        if re.fullmatch(r"\d{13}", p):  # found an EAN
-            ean = p
-            size = paragraphs[i + 1].strip() if i + 1 < len(paragraphs) else ""
-            qty = paragraphs[i + 2].strip() if i + 2 < len(paragraphs) else ""
-            sku = paragraphs[i + 3].strip() if i + 3 < len(paragraphs) else ""
-            block = f"EAN: {ean}\nSize: {size}\nQuantity: {qty}\nSKU: {sku}\n"
-            blocks.append(block)
-    return "\n".join(blocks) if blocks else "[Number/size breakdown]"
+def extract_article_table(paragraphs):
+    """Extract article details table for Article Not Ordered emails."""
+    table_rows = []
+    inside_table = False
+    for p in paragraphs:
+        if re.search(r"Config SKU", p, re.I):
+            inside_table = True
+            continue
+        if inside_table:
+            if not p.strip():
+                break
+            table_rows.append(p)
+    return "\n".join(table_rows) if table_rows else "[Article information from ticket]"
 
 
-# ---------- Email templates ----------
-def generate_article_not_ordered_email(supplier, sn_info, article_info, number_info, name):
-    return f"""Dear {supplier},
+def extract_price_table(paragraphs):
+    """Extracts the table and formats it as Jira-style HTML."""
+    table_lines = []
+    header_found = False
+    for p in paragraphs:
+        if re.search(r"Config.?SKU", p, re.I):
+            header_found = True
+            header = [
+                "Config-SKU", "Supp. Article #", "Supp. Color",
+                "PO Price (after discount)", "Invoiced Price (after discount)",
+                "% Deviation", "Total Position Difference", "Invoiced Qty"
+            ]
+            table_lines.append(header)
+            continue
+        if header_found:
+            if not re.search(r"\d", p):
+                break
+            row = re.split(r"[\t|,; ]{2,}", p.strip())
+            if len(row) >= 8:
+                table_lines.append(row[:8])
+            else:
+                table_lines.append(row)
 
-I hope this email finds you well.
+    if not table_lines or len(table_lines) <= 1:
+        return "[Table information]"
 
-We have (an) item/s in quarantine storage as it looks like we have not ordered it and therefore we can not receive it/them. The articles have been delivered with {sn_info}.
-When items cannot be directly received due to specific issues they are sidelined and stored in our quarantine storage area (= a separate area in our warehouse). This additional clarification process is causing capacity losses and unforeseen costs. 
+    # Build HTML table
+    html = '<table border="1" cellspacing="0" cellpadding="5" style="border-collapse: collapse; text-align:center; width:100%;">'
+    html += '<tr style="background-color:#f2f2f2; font-weight:bold;">'
+    for head in table_lines[0]:
+        html += f"<td>{head}</td>"
+    html += "</tr>"
+    for row in table_lines[1:]:
+        html += "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+    html += "</table>"
+    return html
 
-{article_info}
 
-We have received:
-{number_info}
-units of this style.
-
-We have two options:
-
-1. Return (please provide the address, return label, and return authorization number).
-
-2. You can agree that we shall process the goods internally at Zalando's own discretion and thereby relinquish any and all rights that may have been reserved in the items (items will be processed further internally and then sold in bulk)
-
-Please note, as per § 23 of the German Kreislaufwirtschaftsgesetz/Circular Economy Act (Kreislaufwirtschaftsgesetz) and similar legislation in other countries, we as a distributor are obliged to ensure that the quality of the articles we distribute is maintained and that they do not become waste (“duty of care”). 
-
-In order to follow our sustainable and eco-friendly approach and by the German Circular Economy Act, we are unable to proceed with destruction and can offer a return or internal processing. Please note, although the law is a German one we do apply it to all our warehouses across Europe.
-
-Please confirm how you would like to proceed within the next 3 working days.
-
-Should we not hear from you until then, we will assume your tacit consent that we may proceed by processing the articles internally.
-
-Therefore, if you do not wish to accept this and would like to take back the articles for further processing on your side, please reach out to us within the deadline set.
-
-If you have further questions, please do not hesitate to reach out.
-
-Thank you and kind regards,
-
+# ---------- Email Templates ----------
+def generate_price_variance_email(supplier, invoice, table_html, name):
+    return f"""Dear {supplier},<br><br>
+I hope this email finds you well.<br>
+Your invoice {invoice} is currently in clarification due to a price discrepancy.<br><br>
+{table_html}<br><br>
+Please get back to us within the next 3 working days, otherwise we will have to deduct the difference automatically via debit note.<br>
+If you have further questions, please do not hesitate to reach out.<br><br>
+Thank you and kind regards,<br>
 {name}"""
 
 
-def generate_price_variance_email(supplier, invoice, table, name):
-    return f"""Dear {supplier},
-
-I hope this email finds you well.
-Your invoice {invoice} is currently in clarification due to a price discrepancy.
-
-{table}
-
-Please get back to us within the next 3 working days, otherwise we will have to deduct the difference automatically via debit note.
-If you have further questions, please do not hesitate to reach out.
-
-Thank you and kind regards,
+def generate_article_not_ordered_email(supplier, sn_info, article_info, number_info, name):
+    return f"""Dear {supplier},<br><br>
+I hope this email finds you well.<br><br>
+We have (an) item/s in quarantine storage as it looks like we have not ordered it and therefore we can not receive it/them. 
+The articles have been delivered with {sn_info}.<br>
+When items cannot be directly received due to specific issues they are sidelined and stored in our quarantine storage area 
+(= a separate area in our warehouse). This additional clarification process is causing capacity losses and unforeseen costs.<br><br>
+{article_info}<br><br>
+We have received {number_info} units of this style.<br><br>
+We have two options:<br><br>
+1. Return (please provide the address, return label, and return authorization number).<br><br>
+2. You can agree that we shall process the goods internally at Zalando's own discretion and thereby relinquish any and all rights 
+that may have been reserved in the items (items will be processed further internally and then sold in bulk).<br><br>
+Please confirm how you would like to proceed within the next 3 working days.<br>
+Should we not hear from you until then, we will assume your tacit consent that we may proceed by processing the articles internally.<br><br>
+If you have further questions, please do not hesitate to reach out.<br><br>
+Thank you and kind regards,<br>
 {name}"""
 
 
 # ---------- MAIN ----------
 if uploaded_file and user_name:
     try:
-        if not (ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET):
-            st.error("Missing Aspose credentials.")
-            st.stop()
-
         with st.status("Processing file…", expanded=False) as status:
             status.update(label="Converting .doc → .docx with Aspose")
             file_bytes = uploaded_file.read()
@@ -182,60 +186,26 @@ if uploaded_file and user_name:
             status.update(label="Extracting text")
             paragraphs = extract_text_from_docx_bytes(docx_bytes)
 
-        # Optional debug viewer
-        if st.checkbox("🔍 Show extracted text for debugging"):
-            for p in paragraphs:
-                st.write(p)
-
         supplier = extract_supplier(paragraphs)
-        sn_info = extract_sn_info(paragraphs)
-        article_info = extract_article_info(paragraphs)
-        number_info = extract_number_info(paragraphs)
+        invoice = extract_invoice_number(paragraphs)
+        sn_info = extract_sn_number(paragraphs)
 
         if "price" in uploaded_file.name.lower():
-            invoice = "[Invoice Number]"
-            table = "[Table information]"
-            email_body = generate_price_variance_email(supplier, invoice, table, user_name)
+            table_html = extract_price_table(paragraphs)
+            email_body = generate_price_variance_email(supplier, invoice, table_html, user_name)
         else:
-            email_body = generate_article_not_ordered_email(
-                supplier, sn_info, article_info, number_info, user_name
-            )
+            article_info = extract_article_table(paragraphs)
+            number_info = "[Number/size breakdown]"
+            email_body = generate_article_not_ordered_email(supplier, sn_info, article_info, number_info, user_name)
 
-        # --- Output + Copy Button ---
         st.success("✅ File processed successfully!")
         st.markdown("**📧 Email Preview**")
-        st.text_area("Generated Email", email_body, height=500, key="email_preview")
+        st.markdown(email_body, unsafe_allow_html=True)
 
-        _email_js_str = json.dumps(email_body)
-        html(f"""
-        <div style='margin-top:10px;'>
-          <button id="copyBtn" style="
-              padding: 0.6rem 1rem;
-              border-radius: 8px;
-              border: 1px solid #ddd;
-              cursor: pointer;
-              background-color:#f4f4f4;">
-            📋 Copy Email to Clipboard
-          </button>
-        </div>
-        <script>
-          const EMAIL_TEXT = {_email_js_str};
-          document.getElementById('copyBtn').addEventListener('click', async () => {{
-            try {{
-              await navigator.clipboard.writeText(EMAIL_TEXT);
-              alert('Email copied to clipboard!');
-            }} catch (e) {{
-              const ta = document.createElement('textarea');
-              ta.value = EMAIL_TEXT;
-              document.body.appendChild(ta);
-              ta.select();
-              document.execCommand('copy');
-              document.body.removeChild(ta);
-              alert('Email copied to clipboard!');
-            }}
-          }});
-        </script>
-        """, height=70)
+        if st.button("📋 Copy Email to Clipboard"):
+            st.code(email_body, language="html")
+            st.info("You can now press Ctrl+C to copy the text manually.")
 
     except Exception as e:
         st.error(f"❌ Something went wrong: {e}")
+
